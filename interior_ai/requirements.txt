@@ -1,0 +1,14 @@
+streamlit>=1.40
+torch
+transformers>=4.40
+diffusers>=0.30
+accelerate
+scikit-learn
+pandas
+numpy
+pillow
+joblib
+opencv-python-headless
+requests
+tqdm
+torchvision
