@@ -3,7 +3,7 @@ have access, Structured3D / 3D-FRONT / Matterport3D renders) + the Kaggle style 
 import random, re
 from . import config
 
-POOLS = ["places365", "lsun", "ade20k", "sun_rgbd", "structured3d", "3dfront", "matterport3d"]
+POOLS = ["places365", "lsun", "ade20k", "sun_rgbd", "houzz", "structured3d", "3dfront", "matterport3d"]
 
 
 def _files(d, limit, seed=0):
@@ -17,30 +17,39 @@ def _norm(s):
 
 
 def labeled_style_images(per_class=400):
-    """Style labels come from sub-folder names (data/styles/<style>/*.jpg), from file names
-    (e.g. modern_01.jpg directly in data/styles), or from data/styles/style_map.json
-    ({"folder name": "Style"}) for folders that don't contain a style name."""
+    """Style labels come from sub-folder names (data/styles/<style>/*.jpg) OR
+    data/houzz/<style>/*.jpg, from file names (e.g. modern_01.jpg directly in data/styles),
+    or from data/styles/style_map.json ({"folder name": "Style"}) for non-matching folders."""
     import json
-    root, paths, labels, skipped = config.DATA / "styles", [], [], []
+    paths, labels, skipped = [], [], []
     names = sorted(config.STYLES, key=len, reverse=True)
-    if not root.exists():
-        return paths, labels, skipped
-    mp = root / "style_map.json"
-    manual = json.loads(mp.read_text()) if mp.exists() else {}
     find = lambda text: next((s for s in names if _norm(s) in _norm(text)), None)
-    for d in sorted(root.iterdir()):
-        if d.is_dir():
-            style = manual.get(d.name) or find(d.name)
-            if style not in config.STYLES:
-                skipped.append(d.name); continue
-            fs = _files(d, per_class)
-            paths += fs; labels += [style] * len(fs)
-    by_style = {}
-    for f in root.iterdir():          # images sitting directly in data/styles: label from the file name
-        if f.is_file() and f.suffix.lower() in config.IMG_EXT and find(f.stem):
-            by_style.setdefault(find(f.stem), []).append(f)
-    for style, fs in by_style.items():
-        paths += fs[:per_class]; labels += [style] * len(fs[:per_class])
+
+    def _ingest_root(root, manual_map=None):
+        if not root.exists():
+            return
+        mp = root / "style_map.json"
+        manual = json.loads(mp.read_text()) if mp.exists() else (manual_map or {})
+        for d in sorted(root.iterdir()):
+            if d.is_dir():
+                style = manual.get(d.name) or find(d.name)
+                if style not in config.STYLES:
+                    skipped.append(d.name)
+                    continue
+                fs = _files(d, per_class)
+                paths.extend(fs); labels.extend([style] * len(fs))
+        by_style = {}
+        for f in root.iterdir():
+            if f.is_file() and f.suffix.lower() in config.IMG_EXT and find(f.stem):
+                by_style.setdefault(find(f.stem), []).append(f)
+        for style, fs in by_style.items():
+            paths.extend(fs[:per_class]); labels.extend([style] * len(fs[:per_class]))
+
+    # Primary styles root
+    _ingest_root(config.DATA / "styles")
+    # Houzz dataset as an additional labeled source (folder names map to styles)
+    _ingest_root(config.DATA / "houzz")
+
     return paths, labels, skipped
 
 

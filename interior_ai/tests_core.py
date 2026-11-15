@@ -9,6 +9,7 @@ class FakeEmb:
     def images(self, ims): return np.stack([self._v(int(np.asarray(i).mean())) for i in ims])
     def paths(self, ps):
         ims = [Image.open(p) for p in ps]; return self.images(ims), list(range(len(ps)))
+
 class FakeSeg:
     def objects(self, img): return {"wall": .4, "sofa": .2, "floor": .2, "lamp": .01}
 
@@ -19,25 +20,38 @@ from src import config, catalog
 real_data = config.DATA
 with tempfile.TemporaryDirectory() as tmp:
     config.DATA = pathlib.Path(tmp)
-    abo = config.DATA / "abo"; (abo / "listings/metadata").mkdir(parents=True); (abo / "images/metadata").mkdir(parents=True)
+    abo = config.DATA / "abo"
+    (abo / "listings/metadata").mkdir(parents=True)
+    (abo / "images/metadata").mkdir(parents=True)
     with gzip.open(abo / "listings/metadata/listings_0.json.gz", "wt") as f:
-        for i, (n, t, col) in enumerate([("Modern Linen Sofa", "SOFA", "Grey"), ("Wooden Dining Chair", "CHAIR", "Brown"), ("USB Cable", "CABLE", "Black")]):
-            f.write(json.dumps({"item_id": f"B{i}", "item_name": [{"language_tag": "de_DE", "value": "x"}, {"language_tag": "en_US", "value": n}],
-                                "product_type": [{"value": t}], "color": [{"language_tag": "en_US", "value": col}], "main_image_id": f"img{i}"}) + "\n")
+        for i, (n, t, col) in enumerate([("Modern Linen Sofa", "SOFA", "Grey"),
+                                          ("Wooden Dining Chair", "CHAIR", "Brown"),
+                                          ("USB Cable", "CABLE", "Black")]):
+            f.write(json.dumps({
+                "item_id": f"B{i}",
+                "item_name": [{"language_tag": "de_DE", "value": "x"}, {"language_tag": "en_US", "value": n}],
+                "product_type": [{"value": t}],
+                "color": [{"language_tag": "en_US", "value": col}],
+                "main_image_id": f"img{i}",
+            }) + "\n")
     (abo / "images/metadata/images.csv").write_text("image_id,height,width,path\nimg0,1,1,aa/a.jpg\nimg1,1,1,bb/b.jpg\n")
     rows = catalog.load_abo(download_images=False)
-    assert {r["category"] for r in rows} == {"sofa", "chair"} and len(rows) == 2          # cable filtered out
+    assert {r["category"] for r in rows} == {"sofa", "chair"} and len(rows) == 2   # cable filtered out
     assert [r for r in rows if r["category"] == "sofa"][0]["rgb"] == config.COLOR_WORDS["grey"]
     assert all(r["image_path"].endswith(".jpg") and "images" in r["image_path"] for r in rows)
+    # shop_link generated for ABO rows
+    assert all(r["shop_link"] and "amazon" in r["shop_link"] for r in rows), "ABO rows should have amazon shop links"
 
     ik = config.DATA / "ikea"; ik.mkdir()
     (ik / "ikea.csv").write_text("item_id,name,category,price,short_description\n1.0,BILLY,Bookcases,100,White bookcase\n2.0,FREKVENS,Bar furniture,50,Grey stool\n")
     ir = catalog.load_ikea()
     assert abs(ir[0]["price"] - 100 * config.CURRENCY_TO_INR["SAR"]) < 1e-6 and ir[0]["id"] == "ikea:1"   # SAR -> INR
     (ik / "ikea.csv").write_text("item_id,name,category,price,currency\n3,KALLAX,Shelf unit,10,USD\n")
-    assert abs(catalog.load_ikea()[0]["price"] - 10 * config.CURRENCY_TO_INR["USD"]) < 1e-6          # currency column respected
+    assert abs(catalog.load_ikea()[0]["price"] - 10 * config.CURRENCY_TO_INR["USD"]) < 1e-6   # currency column respected
 
-    st = config.DATA / "styles"; (st / "Scandinavian_living").mkdir(parents=True); (st / "weird_folder").mkdir()
+    st = config.DATA / "styles"
+    (st / "Scandinavian_living").mkdir(parents=True)
+    (st / "weird_folder").mkdir()
     for pth in [st / "Scandinavian_living/a.jpg", st / "weird_folder/b.jpg", st / "modern_01.jpg"]:
         Image.new("RGB", (8, 8)).save(pth)
     from src.rooms import labeled_style_images
@@ -45,24 +59,42 @@ with tempfile.TemporaryDirectory() as tmp:
     assert sorted(ls) == ["Modern", "Scandinavian"] and skipped == ["weird_folder"]
     (st / "style_map.json").write_text(json.dumps({"weird_folder": "Industrial"}))
     assert "Industrial" in labeled_style_images()[1]
-config.DATA = real_data
-print("loaders OK (ABO, IKEA+INR, style labelling)")
 
+    # Test houzz folder is also picked up as labeled data
+    houzz = config.DATA / "houzz"
+    (houzz / "bohemian_rooms").mkdir(parents=True)
+    Image.new("RGB", (8, 8)).save(houzz / "bohemian_rooms/x.jpg")
+    ps2, ls2, _ = labeled_style_images()
+    assert "Bohemian" in ls2, "Houzz bohemian folder should be detected"
+
+config.DATA = real_data
+print("loaders OK (ABO+shop_links, IKEA+INR, style labelling, houzz)")
+
+# ---- config helpers ----
 assert config.categorize("floor lamp") == "lighting" and config.categorize("Coffee table") == "table"
 assert config.categorize("bedside table") == "table" and config.categorize("banana") is None
+assert config.rupees(1500).startswith("Rs."), "rupees() should use Rs. prefix"
+assert "wayfair" in config.wayfair_link("test sofa")
+assert "amazon" in config.amazon_link("test chair")
+assert "ikea" in config.ikea_link("test lamp")
+print("config helpers OK")
 
 import build_index
 build_index.build(FakeEmb())
 df, E = catalog.load_index()
 print("catalog:", len(df), "items, emb", E.shape)
+assert "shop_link" in df.columns, "catalog must have shop_link column"
 
 from src.recommend import Recommender
 from src.generate import Redesigner
 from src.pipeline import analyze_room
 from src.palette import dominant_colors
+
 class FakeStyle:
-    def predict(self, v): return {s: 1 / 10 for s in config.STYLES} | {"Coastal": .5}
-emb = FakeEmb(); rec = Recommender(emb, df, E)
+    def predict(self, v): return {s: 1 / len(config.STYLES) for s in config.STYLES} | {"Coastal": .5}
+
+emb = FakeEmb()
+rec = Recommender(emb, df, E)
 m = dict(emb=emb, style=FakeStyle(), seg=FakeSeg(), redesign=Redesigner(), rec=rec)
 img = Image.fromarray((np.random.default_rng(0).random((200, 300, 3)) * 255).astype("uint8"))
 res = analyze_room(img, m, "Scandinavian")
@@ -70,7 +102,8 @@ assert res["redesign"].size == img.size and res["target"] == "Scandinavian"
 assert "sofa" in res["have"] and "rug" in res["missing"] and "sofa" not in res["missing"]
 r = rec.recommend(res["room_emb"], "Scandinavian", res["palette"], res["missing"], budget=30000)
 assert len(r) == 8 and (r.price <= 30000).all() and r.category.value_counts().max() <= 2
-r2 = rec.recommend(res["room_emb"], "Scandinavian", res["palette"], res["missing"], liked=[r.id.iloc[0]], disliked=[r.id.iloc[1]])
+r2 = rec.recommend(res["room_emb"], "Scandinavian", res["palette"], res["missing"],
+                   liked=[r.id.iloc[0]], disliked=[r.id.iloc[1]])
 assert r.id.iloc[1] not in set(r2.id)
 print(r[["name", "category", "price", "why"]].head(4).to_string())
 print("core logic OK, redesign mode:", m["redesign"].mode)
@@ -83,4 +116,5 @@ for name, cls in dict(embed="Embedder", style="StyleClassifier", segment="Segmen
 from streamlit.testing.v1 import AppTest
 at = AppTest.from_file("app.py", default_timeout=60).run()
 assert not at.exception, at.exception
-assert (df.price >= 2000).all(); print("app renders:", [t.value for t in at.title], "| button disabled until upload:", at.button[0].disabled)
+assert (df.price >= 2000).all()
+print("app renders OK | button disabled until upload:", at.button[0].disabled)

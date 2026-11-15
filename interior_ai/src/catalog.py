@@ -1,5 +1,5 @@
 """Loads the product datasets (Amazon Berkeley Objects, IKEA, Wayfair WANDS) into one table:
-id, source, name, category, price (INR), rgb, image_path, link."""
+id, source, name, category, price (INR), rgb, image_path, link, shop_link."""
 import gzip, json, random, re
 from concurrent.futures import ThreadPoolExecutor
 import numpy as np
@@ -9,9 +9,10 @@ from PIL import Image, ImageDraw
 from . import config
 from .palette import product_color
 
-COLS = ["id", "source", "name", "category", "price", "rgb", "image_path", "link"]
+COLS = ["id", "source", "name", "category", "price", "rgb", "image_path", "link", "shop_link"]
 ABO_IMG_URL = "https://amazon-berkeley-objects.s3.amazonaws.com/images/small/"
-WANDS_TOP = {"Furniture", "Décor & Pillows", "Lighting", "Rugs", "Storage & Organization"}
+WANDS_TOP = {"Furniture", "Decor & Pillows", "Lighting", "Rugs", "Storage & Organization",
+             "Decor \u0026 Pillows"}
 
 
 def _rgb_from_text(text):
@@ -44,6 +45,19 @@ def _download(url, dest):
         return False
 
 
+def _make_shop_link(source, name, category, existing_link=None):
+    """Generate a shopping link based on dataset source."""
+    if existing_link:
+        return str(existing_link)
+    if source == "wands":
+        return config.wayfair_link(name, category)
+    if source == "abo":
+        return config.amazon_link(name, category)
+    if source == "ikea":
+        return config.ikea_link(name, category)
+    return config.google_shopping_link(name, category)
+
+
 def load_abo(limit=3000, download_images=True):
     """Needs listings_*.json.gz and images.csv(.gz) in data/abo (datasets.py fetch gets them).
     Only the photos of the sampled products are downloaded (a few MB, not the 3 GB archive)."""
@@ -68,9 +82,11 @@ def load_abo(limit=3000, download_images=True):
                 if not (cat and name):
                     continue
                 rel = imgmap.get(d.get("main_image_id"))
+                link = _make_shop_link("abo", name, cat)
                 cands.append(dict(id=f"abo:{d['item_id']}", source="abo", name=name[:120], category=cat,
                                   price=None, rgb=_rgb_from_text(_en(d.get("color"))),
-                                  image_path=str(base / rel) if rel else None, link=None, _rel=rel))
+                                  image_path=str(base / rel) if rel else None, link=None,
+                                  shop_link=link, _rel=rel))
     random.Random(0).shuffle(cands)
     rows = cands[:limit]
     if download_images:
@@ -101,9 +117,11 @@ def load_ikea(limit=3000):
         cur = (g(r, "currency") or config.IKEA_DEFAULT_CURRENCY).upper()
         inr = None if pd.isna(price) else float(price) * config.CURRENCY_TO_INR.get(cur, 1.0)
         iid = g(r, "item_id").split(".")[0] or str(len(rows))
+        existing_link = g(r, "link") or None
+        shop_link = existing_link or config.ikea_link(name, cat)
         rows.append(dict(id=f"ikea:{iid}", source="ikea", name=f"IKEA {name} {desc}".strip()[:120],
                          category=cat, price=inr, rgb=_rgb_from_text(f"{desc} {name}"),
-                         image_path=imgs.get(iid), link=g(r, "link") or None))
+                         image_path=imgs.get(iid), link=existing_link, shop_link=shop_link))
         if len(rows) >= limit:
             break
     return rows
@@ -123,8 +141,10 @@ def load_wands(limit=3000):
         cat = config.categorize(cls) or config.categorize(name)
         if not cat:
             continue
+        shop_link = config.wayfair_link(name, cat)
         rows.append(dict(id=f"wands:{r.product_id}", source="wands", name=name[:120], category=cat,
-                         price=None, rgb=_rgb_from_text(name), image_path=None, link=None))
+                         price=None, rgb=_rgb_from_text(name), image_path=None, link=None,
+                         shop_link=shop_link))
         if len(rows) >= limit:
             break
     return rows
@@ -134,14 +154,14 @@ def demo_catalog():
     """Tiny synthetic catalogue so the UI runs before any dataset is downloaded."""
     d = config.DATA / "demo"
     d.mkdir(exist_ok=True)
-    names = {"sofa": ["Linen sofa", "Velvet sectional", "Leather couch"],
-             "chair": ["Accent armchair", "Wooden dining chair", "Lounge chair"],
-             "table": ["Coffee table", "Dining table", "Side table"],
-             "lighting": ["Floor lamp", "Pendant light", "Table lamp"],
-             "rug": ["Wool rug", "Jute rug", "Patterned rug"],
+    names = {"sofa":    ["Linen sofa", "Velvet sectional", "Leather couch"],
+             "chair":   ["Accent armchair", "Wooden dining chair", "Lounge chair"],
+             "table":   ["Coffee table", "Dining table", "Side table"],
+             "lighting":["Floor lamp", "Pendant light", "Table lamp"],
+             "rug":     ["Wool rug", "Jute rug", "Patterned rug"],
              "curtain": ["Linen curtains", "Blackout curtains"],
              "storage": ["Bookcase", "Sideboard", "Wardrobe"],
-             "decor": ["Wall mirror", "Ceramic vase", "Cushion set"]}
+             "decor":   ["Wall mirror", "Ceramic vase", "Cushion set"]}
     cols, rng, rows = list(config.COLOR_WORDS)[:10], random.Random(0), []
     for cat, ns in names.items():
         for n in ns:
@@ -151,9 +171,10 @@ def demo_catalog():
                 im = Image.new("RGB", (240, 240), (245, 245, 245))
                 ImageDraw.Draw(im).rounded_rectangle((40, 60, 200, 190), 18, fill=rgb)
                 im.save(p)
+                shop_link = config.google_shopping_link(f"{cn.title()} {n}", cat)
                 rows.append(dict(id=f"demo:{len(rows)}", source="demo", name=f"{cn.title()} {n}",
                                  category=cat, price=float(rng.randrange(2000, 80000, 500)), rgb=rgb,
-                                 image_path=str(p), link=None))
+                                 image_path=str(p), link=None, shop_link=shop_link))
     return rows
 
 
@@ -186,4 +207,5 @@ def load_index():
     df = pd.read_csv(config.INDEX / "catalog.csv")
     df["rgb"] = df["rgb"].map(lambda s: tuple(int(x) for x in s.split(",")) if isinstance(s, str) and s else None)
     df["image_path"] = df["image_path"].where(df["image_path"].notna(), None)
+    df["shop_link"] = df["shop_link"].where(df["shop_link"].notna(), None)
     return df, np.load(config.INDEX / "embeddings.npy")

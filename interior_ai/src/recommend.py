@@ -68,9 +68,15 @@ class Recommender:
             if gap[i]: why.append(f"your room has no {c} yet")
             if room[i] > 0.7: why.append("similar look to your room")
             if taste[i] > 0.7 and li: why.append("like items you liked")
-            picks.append((i, float(score[i]), " · ".join(why) or "good overall match"))
+            picks.append((i, float(score[i]), " \u00b7 ".join(why) or "good overall match"))
             if len(picks) >= k:
                 break
         out = df.iloc[[p[0] for p in picks]].copy()
-        out["score"], out["why"] = [p[1] for p in picks], [p[2] for p in picks]
+        out["score"] = [p[1] for p in picks]
+        out["why"] = [p[2] for p in picks]
+        # Ensure shop_link column exists (backward compat with old index)
+        if "shop_link" not in out.columns:
+            from . import config as _cfg
+            out["shop_link"] = out.apply(
+                lambda r: _cfg.google_shopping_link(r["name"], r["category"]), axis=1)
         return out

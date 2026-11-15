@@ -1,8 +1,14 @@
-streamlit>=1.40
+# Core ML
 torch
+torchvision
 transformers>=4.40
 diffusers>=0.30
 accelerate
+
+# App
+streamlit>=1.40
+
+# Data
 scikit-learn
 pandas
 numpy
@@ -11,4 +17,6 @@ joblib
 opencv-python-headless
 requests
 tqdm
-torchvision
+
+# Optional: faster similarity search
+# faiss-cpu

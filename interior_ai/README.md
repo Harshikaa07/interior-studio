@@ -1,82 +1,217 @@
-# Interior Studio: AI interior visualizer + recommender
+# 🏠 Interior Studio
 
-Upload a room photo → the app detects its style, colours and missing furniture, redesigns the room in a
-chosen style, and recommends products that fit (prices in ₹). 👍/👎 personalises the list.
+> AI-powered room visualizer and furniture recommender — upload a photo, pick an aesthetic, get a redesign and curated shop links.
 
-## EXACT STEPS: Google Colab (recommended, free GPU)
+![Python](https://img.shields.io/badge/Python-3.10+-blue?logo=python)
+![Streamlit](https://img.shields.io/badge/Streamlit-1.40+-red?logo=streamlit)
+![CLIP](https://img.shields.io/badge/CLIP-ViT--B/32-green)
+![License](https://img.shields.io/badge/License-MIT-lightgrey)
 
-1. Open colab.research.google.com → New notebook → Runtime → Change runtime type → **T4 GPU** → Save.
-2. Click the folder icon on the left, drag `interior_ai.zip` into it.
-3. Run each of these in its own cell:
+---
+
+## What it does
+
+1. **Analyze** — SegFormer detects objects in your room; CLIP extracts a style embedding; K-means finds the dominant colour palette.
+2. **Redesign** — Stable Diffusion + ControlNet (canny edges) repaints the room in your chosen aesthetic, preserving walls, windows, and layout. CPU fallback applies a colour-grade preview.
+3. **Recommend** — A hybrid CLIP-based retrieval scores products by room similarity (30%), style match (30%), colour harmony (20%) and your taste (20%). Each recommendation links directly to a shop.
+
+---
+
+## Datasets used
+
+| Dataset | Role | How to get |
+|---|---|---|
+| **Wayfair WANDS** | Product catalogue (names, categories) — auto-fetched | `python datasets.py fetch` |
+| **Amazon Berkeley Objects (ABO)** | Product catalogue (photos + names + colours) — auto-fetched | `python datasets.py fetch` |
+| **Pinterest Shop The Look** | Evaluation: scene→product retrieval | `python datasets.py fetch` |
+| **Kaggle Interior Design Styles** | Labelled data for the style classifier | See [setup](#dataset-setup) |
+| **Houzz Interior Design (Kaggle)** | Additional labelled style images (15 styles) | See [setup](#dataset-setup) |
+| **IKEA furniture (Kaggle)** | Product catalogue with prices | See [setup](#dataset-setup) |
+| **Places365** (indoor split) | Room-photo pool for pseudo-labelling | Auto (torchvision) |
+
+---
+
+## Pipeline architecture
+
 ```
-!unzip -q interior_ai.zip
-%cd interior_ai
+Room photo
+    │
+    ├── CLIP image encoder ──────────────────────────────────────────► room embedding
+    │       │                                                               │
+    │   style head (logistic regression)                                    │
+    │       │                                                               │
+    │   detected style                                                      │
+    │                                                                       │
+    ├── SegFormer (ADE20K) ──► object labels ──► detected categories        │
+    │                                                                       │
+    └── K-means (5 clusters) ──► dominant colours                           │
+                                                                            ▼
+                                                                  Hybrid Recommender
+                                                                 (room + style + colour
+                                                                  + taste → ranked list)
+                                                                            │
+Target style ──► Stable Diffusion + ControlNet ──► Redesigned room         │
+                                                                            ▼
+                                                               Product cards + shop links
+```
+
+---
+
+## Run locally
+
+```bash
+# 1. Clone the repo
+git clone https://github.com/Harshikaa07/interior-studio.git
+cd interior-studio
+
+# 2. Create a virtual environment
+python -m venv venv
+# Windows:
+venv\Scripts\activate
+# macOS / Linux:
+source venv/bin/activate
+
+# 3. Install dependencies
+pip install -r requirements.txt
+
+# 4. Download the auto-fetchable datasets
+python datasets.py fetch
+
+# 5. Build the product index
+python build_index.py
+
+# 6. Run the app
+streamlit run app.py
+```
+
+> **No GPU?**  The app still works — redesign uses a quick colour-grade preview instead of Stable Diffusion. For the full AI redesign, run on Google Colab with a T4 GPU (see below).
+
+---
+
+## Dataset setup
+
+### Auto-fetched (no action needed)
+```bash
+python datasets.py fetch   # downloads ABO listings, WANDS, Shop The Look, Places365
+```
+
+### Kaggle datasets (optional but recommended)
+
+1. Go to kaggle.com → profile → **Settings** → **API** → **Create New Token** → download `kaggle.json`
+2. Place it at `~/.kaggle/kaggle.json`  (Windows: `C:\Users\<you>\.kaggle\kaggle.json`)
+3. Run:
+
+```bash
+pip install kaggle
+
+# Interior Design Styles — labelled style images
+python datasets.py kaggle natecat/interior-design-styles styles
+
+# Houzz dataset — 15 style categories
+python datasets.py kaggle meherunnesashoshi/houzz-interior-design-dataset houzz
+
+# IKEA furniture — names, categories and prices
+python datasets.py kaggle ahmedkallam/ikea-sa-furniture-web-scraping ikea
+```
+
+> Find the exact slug (`owner/dataset`) from the dataset's URL on kaggle.com: `kaggle.com/datasets/OWNER/NAME`.
+
+After adding any dataset:
+```bash
+python build_index.py    # re-build the product index
+python train_style.py    # re-train the style classifier (needs data/styles/ or data/houzz/)
+```
+
+---
+
+## Run on Google Colab (free GPU)
+
+1. Open [colab.research.google.com](https://colab.research.google.com) → New notebook → Runtime → Change runtime type → **T4 GPU** → Save.
+2. Upload the project zip into Colab's file browser.
+3. Run each cell:
+
+```bash
+!unzip -q interior-studio.zip
+%cd interior-studio
 !pip install -q -r requirements.txt
 !python datasets.py fetch
-!python datasets.py status
+!python build_index.py
 ```
-4. **Kaggle datasets** (style images + IKEA). On kaggle.com: profile picture → Settings → API → *Create New Token*
-   (downloads `kaggle.json`). Upload it to Colab, then:
-```
-!pip install -q kaggle
-!mkdir -p ~/.kaggle && cp /content/kaggle.json ~/.kaggle/ && chmod 600 ~/.kaggle/kaggle.json
-!python datasets.py kaggle OWNER/INTERIOR-STYLES-DATASET styles
-!python datasets.py kaggle OWNER/IKEA-DATASET ikea
-```
-   Find the `OWNER/NAME` by searching Kaggle for "interior design styles" and "IKEA furniture dataset" (the slug is
-   in the dataset's URL: kaggle.com/datasets/OWNER/NAME). Style images must end up in folders whose name contains a
-   style (modern, scandinavian, ...). If a folder has another name, create `data/styles/style_map.json`, e.g.
-   `{"dark_wood": "Traditional"}`. Run `python train_style.py` and it prints any folders it couldn't match.
-5. Optional extra scene datasets (LSUN, ADE20K, SUN RGB-D; Structured3D/3D-FRONT/Matterport3D need access approval):
-   put their images into `data/<name>/` (names listed by `python datasets.py status`). Skip any you don't have.
-6. Build and train:
-```
-!python build_index.py            # embeds the product catalogue (ABO + IKEA + WANDS)
-!python train_style.py            # trains the style classifier, prints accuracy vs zero-shot (needs data/styles)
-!python evaluate.py stl 1000      # retrieval score on Pinterest Shop The Look; copy these numbers into your report
-```
-7. Launch the app:
-```
-!npm install -g localtunnel -q
-!streamlit run app.py &>/content/log.txt &
+
+4. *(Optional)* Add Kaggle datasets as above.
+
+5. Launch the app:
+
+```bash
+!pip install -q localtunnel
+!streamlit run app.py &> /content/log.txt &
 !curl ipv4.icanhazip.com
 !npx localtunnel --port 8501
 ```
-   Open the `https://….loca.lt` link; when it asks for a password, paste the IP printed by `curl`.
-   The first load downloads the AI models (a few minutes).
 
-## EXACT STEPS: your own laptop (works, but redesign is a quick colour-grade preview without an NVIDIA GPU)
+Open the `https://...loca.lt` URL and paste the IP from `curl` as the password on first visit.
+
+---
+
+## Train the style classifier
+
+```bash
+python train_style.py    # prints: zero-shot CLIP accuracy vs trained-head accuracy
 ```
-python -m venv venv
-venv\Scripts\activate            (Mac/Linux: source venv/bin/activate)
-pip install -r requirements.txt
-python datasets.py fetch
-python build_index.py
-streamlit run app.py
+
+Training uses:
+- **Labelled images** from `data/styles/` and `data/houzz/` (folder names map to style names automatically).
+- **Pseudo-labelled images** from Places365 / LSUN / ADE20K (confident CLIP predictions above 0.5 confidence are kept at half weight).
+
+---
+
+## Evaluate retrieval quality
+
+```bash
+python evaluate.py stl 1000   # recall@1/5/10 on Pinterest Shop The Look
 ```
-Works with zero extra datasets (WANDS is fetched automatically; a tiny demo catalogue is used if nothing is found).
-After adding any dataset, run `python build_index.py` again.
 
-## Where each dataset is used
-| Dataset | Role |
-|---|---|
-| Kaggle interior styles | labelled data for the style classifier |
-| Places365, LSUN, SUN RGB-D, ADE20K, (3D-FRONT, Structured3D, Matterport3D) | room-photo pool, pseudo-labelled by CLIP to enlarge style training; ADE20K also trained the SegFormer |
-| Amazon Berkeley Objects, IKEA, Wayfair WANDS | product catalogue (photo-embedded when images exist, text-embedded otherwise) |
-| Pinterest Shop The Look (home) | evaluation of room → product retrieval |
+---
 
-## Pipeline
-1. **Understand**: SegFormer (objects), K-means (palette), CLIP + logistic-regression head (style)
-2. **Redesign**: Stable Diffusion + ControlNet (canny) keeps the layout; CPU fallback = style colour-grade
-3. **Recommend**: score = 0.30 room similarity + 0.30 style match + 0.20 colour harmony (Lab space) + 0.20 taste
-   (liked/disliked items), + gap bonus for categories the room lacks, budget filter, ≤2 items per category
+## Run the tests
 
-## Limits (say these in your report)
-- Prices: only IKEA rows carry prices (converted to ₹ at the rates in `src/config.py`, approximate Nov 2026:
-  1 SAR ≈ ₹25.5, 1 USD ≈ ₹95). ABO and WANDS have no price, so the budget slider can't filter them.
-- The common IKEA Kaggle CSV has no currency column; it's assumed to be SAR (`IKEA_DEFAULT_CURRENCY`). If your CSV has a
-  `currency` column it is used instead.
-- Shop The Look images are 2019 Pinterest links and some are dead; `evaluate.py` reports how many downloaded.
-- Gated datasets need access approval; the code simply uses whatever is in `data/<name>/`.
-- The redesign is a generative approximation, not a measured-to-scale design.
-- `python tests_core.py` runs the logic tests (no downloads needed).
+```bash
+python tests_core.py   # no model downloads needed — uses fake CLIP/segmenter
+```
+
+---
+
+## Notes & limitations
+
+- **Prices** are shown in Indian Rupees (Rs.). Only IKEA rows carry actual prices; ABO and WANDS have no price, so the budget slider only filters IKEA items.
+- **Shop links** are generated search URLs (Wayfair, Amazon.in, IKEA) — not guaranteed affiliate links.
+- **Redesign accuracy**: the redesign is generative, not measured-to-scale. Structural features (walls, windows) are preserved via ControlNet canny edges; furniture placement is approximated.
+- **Shop The Look images** are 2019 Pinterest links — some are dead. Use a larger N for the evaluation (`python evaluate.py stl 2000`).
+- **Gated datasets** (3D-FRONT, Structured3D, Matterport3D) require access approval from their respective maintainers.
+
+---
+
+## Project structure
+
+```
+interior-studio/
+├── app.py               # Streamlit UI
+├── datasets.py          # Dataset download & status
+├── build_index.py       # Embed all products into CLIP space
+├── train_style.py       # Train the style classifier
+├── evaluate.py          # Retrieval evaluation (Shop The Look)
+├── tests_core.py        # Logic tests (no downloads)
+├── requirements.txt
+├── .gitignore
+└── src/
+    ├── config.py        # Styles, categories, currency, shop-link generators
+    ├── embed.py         # CLIP embedder (images + text)
+    ├── style.py         # Style classifier (zero-shot + trained head)
+    ├── segment.py       # SegFormer object detector
+    ├── palette.py       # K-means colour palette + Lab colour harmony
+    ├── generate.py      # SD + ControlNet redesigner (CPU colour-grade fallback)
+    ├── recommend.py     # Hybrid CLIP retrieval recommender
+    ├── catalog.py       # Dataset loaders (ABO, IKEA, WANDS) + shop links
+    ├── rooms.py         # Room-image pool loaders for training
+    └── pipeline.py      # End-to-end room analysis
+```
